@@ -1,0 +1,162 @@
+FUNCTION_BLOCK GateMotionControl
+VAR_INPUT
+	i_bRemotebtn: BOOL;              // копче од далинско
+	i_bLocalbtn: BOOL;               // копче на вратата
+	i_bEmergencyStopbtn: BOOL;       // е-стоп
+	i_bObstacleSensor: BOOL;         // сензор пречка
+	i_bLeftLimitSwitch: BOOL;        // лимит затворено
+	i_bRightLimitSwitch: BOOL;       // лимит отворенo
+END_VAR
+VAR_OUTPUT
+		o_bDoorOpened: BOOL := FALSE;    // индикатор отворена врата
+		o_bDoorClosed: BOOL := FALSE;    // индикатор затворена врата
+		o_bErrorAlarm: BOOL := FALSE;    // индикатор грешка
+END_VAR
+VAR
+	// timers
+	tonAutoCloseTimer: TON;
+	tonMotionTimeOut: TON;
+
+	// motion blocks
+	fbPower: MC_Power;
+	fbHome: MC_Home;
+	fbMoveToOpen: MC_MoveAbsolute;
+	fbMoveToClose: MC_MoveAbsolute;
+	fbEstop: MC_Stop;
+
+	// edge detectors
+	rtrigRemote: R_TRIG;
+	rtrigLocal: R_TRIG;
+	rtrigEstop: R_TRIG;
+
+	// копчиња 
+	bRemotebtn: BOOL := FALSE;
+	bLocabtn: BOOL := FALSE;
+
+	// состојба
+	state: E_GateState := E_GateState.Idle;
+END_VAR
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+fbActualPos(Axis:=myAxis,Enable:=TRUE);
+
+// rising edge на копчиња
+rtrigRemote(CLK := i_bRemotebtn);
+rtrigLocal(CLK := i_bLocalbtn);
+rtrigEstop(CLK := i_bEmergencyStopbtn);
+
+IF rtrigRemote.Q THEN bRemotebtn := TRUE; END_IF
+IF rtrigLocal.Q THEN bLocabtn := TRUE; END_IF
+
+// emergency → веднаш Error
+IF rtrigEstop.Q THEN
+	state := E_GateState.Error;
+END_IF
+
+CASE state OF
+	// --------------------------------------------------------
+	E_GateState.Idle:
+		fbMoveToOpen.Execute := FALSE;
+		fbMoveToClose.Execute := FALSE;
+		o_bDoorOpened := FALSE;
+		o_bDoorClosed := FALSE;
+		IF bRemotebtn OR bLocabtn THEN
+			bRemotebtn := FALSE; bLocabtn := FALSE;
+			state := E_GateState.PowerOn;
+		END_IF
+
+	// --------------------------------------------------------
+	E_GateState.PowerOn:
+		fbPower(Axis:=myAxis,Enable:=TRUE,Enable_Positive:=TRUE,Enable_Negative:=TRUE);
+		IF fbPower.Status THEN
+			state := E_GateState.Opening;
+		END_IF
+
+	// --------------------------------------------------------
+	E_GateState.Opening:
+		tonMotionTimeOut(IN:=TRUE, PT:=T#15S);
+		fbMoveToOpen(Axis:=myAxis,Execute:=TRUE,Position:=100,Velocity:=10,Acceleration:=5,Deceleration:=5);
+
+		IF tonMotionTimeOut.Q THEN
+			state := E_GateState.Error;
+		ELSIF i_bObstacleSensor THEN
+			state := E_GateState.Stopped;
+		ELSIF fbMoveToOpen.Done OR i_bRightLimitSwitch THEN
+			fbMoveToOpen.Execute := FALSE;
+			tonMotionTimeOut(IN:=FALSE);
+			state := E_GateState.Opened;
+		END_IF
+
+	// --------------------------------------------------------
+	E_GateState.Opened:
+		o_bDoorOpened := TRUE;
+		tonAutoCloseTimer(IN:=TRUE, PT:=T#7S);
+
+		IF tonAutoCloseTimer.Q THEN
+			tonAutoCloseTimer(IN:=FALSE);
+			state := E_GateState.Closing;
+		END_IF
+
+		// ако корисник сака затворање порано
+		IF bRemotebtn OR bLocabtn THEN
+			bRemotebtn := FALSE; bLocabtn := FALSE;
+			tonAutoCloseTimer(IN:=FALSE);
+			state := E_GateState.Closing;
+		END_IF
+
+	// --------------------------------------------------------
+	E_GateState.Closing:
+		tonMotionTimeOut(IN:=TRUE, PT:=T#15S);
+		fbMoveToClose(Axis:=myAxis,Execute:=TRUE,Position:=0.0,Velocity:=10,Acceleration:=5,Deceleration:=5);
+
+		IF tonMotionTimeOut.Q THEN
+			state := E_GateState.Error;
+		ELSIF i_bObstacleSensor THEN
+			fbMoveToClose.Execute := FALSE;
+			state := E_GateState.Opening;   // ⬅️ реверс при пречка
+		ELSIF fbMoveToClose.Done OR i_bLeftLimitSwitch THEN
+			fbMoveToClose.Execute := FALSE;
+			tonMotionTimeOut(IN:=FALSE);
+			o_bDoorClosed := TRUE;
+			state := E_GateState.Idle;
+		END_IF
+
+		// корисник сака стоп
+		IF bRemotebtn OR bLocabtn THEN
+			bRemotebtn := FALSE; bLocabtn := FALSE;
+			fbMoveToClose.Execute := FALSE;
+			state := E_GateState.Idle;
+		END_IF
+
+	// --------------------------------------------------------
+	E_GateState.Stopped:
+		fbEstop(Axis:=myAxis,Execute:=TRUE,Deceleration:=10);
+		IF fbEstop.Done THEN
+			fbEstop.Execute := FALSE;
+			state := E_GateState.Idle;
+		END_IF
+
+	// --------------------------------------------------------
+	E_GateState.Error:
+		o_bErrorAlarm := TRUE;
+		fbEstop(Axis:=myAxis,Execute:=TRUE,Deceleration:=10);
+		// ресет грешка
+		IF NOT i_bEmergencyStopbtn AND (bRemotebtn OR bLocabtn) THEN
+			bRemotebtn := FALSE; bLocabtn := FALSE;
+			fbEstop.Execute := FALSE;
+			o_bErrorAlarm := FALSE;
+			state := E_GateState.Idle;
+		END_IF
+END_CASE
