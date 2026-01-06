@@ -1,0 +1,17 @@
+VAR_GLOBAL
+	// Влезови 
+	RemoteButtonInput     : BOOL := FALSE;   // далинско копче
+	LocalButtonInput      : BOOL := FALSE;   // копче на врата
+	EStopInput            : BOOL := FALSE;   // emergency stop
+	ObstacleSensorInput   : BOOL := FALSE;   // сензор за пречка
+	LeftLimitInput        : BOOL := FALSE;   // лимит затворено
+	RightLimitInput       : BOOL := FALSE;   // лимит отворено
+
+	// Излези 
+	DoorOpenedLamp        : BOOL := FALSE;   // лампа отворена врата
+	DoorClosedLamp        : BOOL := FALSE;   // лампа затворена врата
+	ErrorLamp             : BOOL := FALSE;   // лампа грешка
+
+	//Оска (врска со виртуелната оска во Motion → Axes → Axis 1)
+	myAxis                : AXIS_REF;        // ова е потребно за MC блоковите
+END_VAR
